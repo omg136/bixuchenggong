@@ -86,11 +86,10 @@ header p{
 .marquee-track {
     display: inline-block;
     white-space: nowrap; /* 强制所有字在一行，绝不换行 */
-    /* 核心改动：由于内部复制了双倍文本，这里只需要平滑向左平移 50% 就能实现无缝首尾衔接 */
     animation: marqueeScroll 30s linear infinite; 
 }
 
-/* 鼠标悬停时暂停滚动，方便仔细观看 */
+/* 鼠标悬停时暂停滚动 */
 .today-card:hover .marquee-track {
     animation-play-state: paused;
 }
@@ -114,7 +113,7 @@ header p{
 .rank-2 { color: #e2e8f0; } /* 银白 */
 .rank-3 { color: #fed7aa; } /* 橘铜 */
 
-/* 绝对无缝滚动的核心动画：从 0 平移到 -50%（刚好第一套播完，第二套接上的一瞬间）重置循环 */
+/* 绝对无缝滚动的核心动画 */
 @keyframes marqueeScroll {
     0% {
         transform: translate3d(0, 0, 0);
@@ -257,6 +256,8 @@ footer{
     padding:30px;
 }
 </style>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 
 <body>
@@ -327,6 +328,11 @@ footer{
 </footer>
 
 <script>
+// 1. 使用你提供的凭证初始化 Supabase 客户端
+const SUPABASE_URL = "https://hqydczwqwbendfoitbva.supabase.co"; 
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhxeWRjendxd2JlbmRmb2l0YnZhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE2OTQ1NTUsImV4cCI6MjA5NzI3MDU1NX0.5Cu1uECciLwrCblrNLlAsgFqCiZ-Dp_v-CKCiTBOM20";
+const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
 const majorSubjects = {
     "商科": { subs: ["会计", "商业", "经济"], img: "https://tse1.mm.bing.net/th/id/OIP.pmWimAXk_n0h_Wv3jSImRAHaEZ?r=0&rs=1&pid=ImgDetMain&o=7&rm=3" },
     "理科": { subs: ["生物", "化学", "物理"], img: "https://wallpapers.com/images/hd/chalkboard-with-equations-xfdmdzbu2itfe95x.jpg" },
@@ -339,91 +345,29 @@ const majorSubjects = {
 
 let currentMajor = ""; 
 let currentSelectedSub = ""; 
+let globalQuotes = []; // 存放从云端数据库动态拉取的全部数据
 
-const defaultQuotes = {
-    "华语": [{ "id": "hy_1", "teacher": "张老师", "nick": "老张", "text": "你们这届是我带过最差的一届！", "likes": 5, "shares": 2, "date": "2026-06-13" }],
-    "数学": [{ "id": "sx_1", "teacher": "李老师", "nick": "Math魔王", "text": "这道题我讲过很多遍了，这是送分题啊！", "likes": 25, "shares": 4, "date": "2026-06-13" }],
-    "马来文": [{ "id": "ml_1", "teacher": "Cikgu Ahmad", "nick": "阿末达人", "text": "Sila dengar betul-betul, ini keluar exam!", "likes": 12, "shares": 1, "date": "2026-06-13" }]
-};
-
-if(!localStorage.getItem("quotes")){
-    localStorage.setItem("quotes", JSON.stringify(defaultQuotes));
-}
 if(!localStorage.getItem("myLikes")){
     localStorage.setItem("myLikes", JSON.stringify({}));
 }
 
-let quotes = JSON.parse(localStorage.getItem("quotes")) || {};
-let submissions = JSON.parse(localStorage.getItem("submissions")) || [];
+// 从 Supabase 获取所有通过审核的口头禅数据
+async function fetchQuotesFromSupabase() {
+    const { data, error } = await supabase
+        .from('quotes')
+        .select('*')
+        .order('likes', { ascending: false });
 
-function getTodayString() {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-// 核心优化：利用双复制拼接机制，让最后一名紧贴着第一名，实现完美无缝流
-function updateRankings(){
-    let allQuotes = [];
-    Object.keys(quotes).forEach(sub => {
-        quotes[sub].forEach(q => {
-            allQuotes.push({ ...q, subject: sub });
-        });
-    });
-
-    const todayBox = document.getElementById("today");
-
-    if(allQuotes.length === 0){
-        todayBox.innerHTML = "<div style='color:#94a3b8; text-align:center;'>暂无数据</div>";
+    if (error) {
+        console.error("从数据库读取数据失败:", error);
         return;
     }
-
-    // 按点赞数降序排序
-    allQuotes.sort((a, b) => b.likes - a.likes);
-    
-    // 计算包含并列的真实前三名数据
-    let displayList = [];
-    let currentRank = 1;
-    let lastLikes = -1;
-    let rankCounter = 0;
-
-    for (let i = 0; i < allQuotes.length; i++) {
-        const item = allQuotes[i];
-        if (item.likes !== lastLikes) {
-            if (rankCounter >= 3) break; 
-            currentRank = displayList.length + 1;
-            rankCounter++;
-        }
-        displayList.push({ ...item, displayRank: currentRank });
-        lastLikes = item.likes;
-    }
-
-    // 生成单组排行榜 HTML 字符串
-    let singleGroupHtml = "";
-    displayList.forEach(item => {
-        let rankClass = `rank-${item.displayRank}`;
-        singleGroupHtml += `
-            <span class="marquee-item">
-                <strong class="${rankClass}">【第 ${item.displayRank} 名】</strong> 
-                ${item.teacher}老师 (${item.nick}) 
-                <span style="color:#64748b; font-size:1.1rem;">[${item.subject}]</span> : 
-                <span style="color:#ffffff;">“${item.text}”</span> 
-                <span style="color:#e11d48; margin-left:8px;">👍 ${item.likes}赞</span>
-            </span>
-        `;
-    });
-
-    // 核心重构：将生成的榜单HTML复制两遍拼在一起 (${singleGroupHtml}${singleGroupHtml})
-    // 这样当第一遍的最后一名走完时，第二遍的第一名紧跟其后，完成神仙衔接！
-    todayBox.innerHTML = `
-        <div class="marquee-track">
-            <div class="marquee-content">
-                ${singleGroupHtml}${singleGroupHtml}
-            </div>
-        </div>
-    `;
+    globalQuotes = data || [];
+    updateRankings();
+    if(currentSelectedSub) renderQuotes();
 }
 
-// 渲染大类
+// 渲染主页科目大类
 function renderSubjects(){
     const container = document.getElementById("subjects");
     container.innerHTML = "";
@@ -438,6 +382,54 @@ function renderSubjects(){
         card.onclick = () => openMajor(major);
         container.appendChild(card);
     });
+}
+
+// 更新滚动风云榜 (基于实时点赞数计算并列排名)
+function updateRankings(){
+    const todayBox = document.getElementById("today");
+
+    if(globalQuotes.length === 0){
+        todayBox.innerHTML = "<div style='color:#94a3b8; text-align:center;'>暂无数据</div>";
+        return;
+    }
+    
+    let displayList = [];
+    let currentRank = 1;
+    let lastLikes = -1;
+    let rankCounter = 0;
+
+    for (let i = 0; i < globalQuotes.length; i++) {
+        const item = globalQuotes[i];
+        if (item.likes !== lastLikes) {
+            if (rankCounter >= 3) break; 
+            currentRank = displayList.length + 1;
+            rankCounter++;
+        }
+        displayList.push({ ...item, displayRank: currentRank });
+        lastLikes = item.likes;
+    }
+
+    let singleGroupHtml = "";
+    displayList.forEach(item => {
+        let rankClass = `rank-${item.displayRank}`;
+        singleGroupHtml += `
+            <span class="marquee-item">
+                <strong class="${rankClass}">【第 ${item.displayRank} 名】</strong> 
+                ${item.teacher}老师 (${item.nick || '无'}) 
+                <span style="color:#64748b; font-size:1.1rem;">[${item.subject}]</span> : 
+                <span style="color:#ffffff;">“${item.text}”</span> 
+                <span style="color:#e11d48; margin-left:8px;">👍 ${item.likes}赞</span>
+            </span>
+        `;
+    });
+
+    todayBox.innerHTML = `
+        <div class="marquee-track">
+            <div class="marquee-content">
+                ${singleGroupHtml}${singleGroupHtml}
+            </div>
+        </div>
+    `;
 }
 
 function openMajor(major){
@@ -476,94 +468,117 @@ function goHome(){
     currentSelectedSub = "";
     document.getElementById("subPage").classList.add("hidden");
     document.getElementById("home").classList.remove("hidden");
-    updateRankings(); 
+    fetchQuotesFromSupabase(); 
 }
 
-// 渲染子类列表
+// 渲染选中科目下的具体名言列表
 function renderQuotes(){
     const box = document.getElementById("quoteList");
     box.innerHTML = "";
-    let total = 0;
-    const targetSub = currentSelectedSub;
     const myLikes = JSON.parse(localStorage.getItem("myLikes")) || {};
     
-    (quotes[targetSub] || []).forEach((q, i) => {
-        total++;
+    const filtered = globalQuotes.filter(q => q.subject === currentSelectedSub);
+
+    filtered.forEach((q) => {
         const isLiked = myLikes[q.id] === true;
 
         box.innerHTML += `
             <div class="quote" style="color:#333;">
-                <b>👨‍🏫 ${q.teacher} (${q.nick})</b> <span style="color:#666; font-size:0.9rem;">[${targetSub}]</span><br><br>
+                <b>👨‍🏫 ${q.teacher} (${q.nick || '无'})</b> <span style="color:#666; font-size:0.9rem;">[${q.subject}]</span><br><br>
                 <p style="font-size:1.1rem; color:#111;">"${q.text}"</p><br>
-                <button onclick="toggleLike('${targetSub}', ${i})" class="${isLiked ? 'btn-liked' : ''}">
+                <button onclick="toggleLike('${q.id}', ${q.likes})" class="${isLiked ? 'btn-liked' : ''}">
                     ${isLiked ? '👎 取消点赞' : '👍 点赞'} (${q.likes})
                 </button>
-                <button onclick="share('${targetSub}',${i})">🔄 分享 (${q.shares})</button>
+                <button onclick="share('${q.id}')">🔄 分享 (${q.shares})</button>
             </div>
         `;
     });
 
-    if(total === 0){
-        box.innerHTML = `<div class='quote' style='color:#666;'>【${targetSub}】下暂无审核通过的口头禅，快去投稿吧！</div>`;
+    if(filtered.length === 0){
+        box.innerHTML = `<div class='quote' style='color:#666;'>【${currentSelectedSub}】下暂无审核通过的口头禅，快去投稿吧！</div>`;
     }
 }
 
-// 点赞引擎
-function toggleLike(sub, i){
+// 点赞处理引擎（同步改动至 Supabase）
+async function toggleLike(quoteId, currentLikes){
     let myLikes = JSON.parse(localStorage.getItem("myLikes")) || {};
-    const q = quotes[sub][i];
+    let newLikes = currentLikes;
 
-    if(!q.id) { q.id = sub + "_" + Date.now() + "_" + i; }
-
-    if(myLikes[q.id]) {
-        q.likes = Math.max(0, q.likes - 1); 
-        delete myLikes[q.id]; 
+    if(myLikes[quoteId]) {
+        newLikes = Math.max(0, currentLikes - 1); 
+        delete myLikes[quoteId]; 
     } else {
-        q.likes++;
-        myLikes[q.id] = true; 
+        newLikes = currentLikes + 1;
+        myLikes[quoteId] = true; 
+    }
+
+    // 远程更新对应的 quotes 记录
+    const { error } = await supabase
+        .from('quotes')
+        .update({ likes: newLikes })
+        .eq('id', quoteId);
+
+    if (error) {
+        alert("点赞同步失败，请检查数据库配置或网络！");
+        return;
     }
 
     localStorage.setItem("myLikes", JSON.stringify(myLikes));
-    saveQuotes();
-    renderQuotes();
-    updateRankings(); 
+    fetchQuotesFromSupabase(); // 重新拉取云端最新数据
 }
 
-function submitPost(){
+// 提交新投稿至待审核表 (submissions)
+async function submitPost(){
     const teacher = document.getElementById("teacherName").value.trim();
     const nick = document.getElementById("teacherNick").value.trim();
     const text = document.getElementById("quoteText").value.trim();
     const subject = document.getElementById("subjectInput").value.trim();
 
-    if(!teacher || !nick || !text || !subject){
+    if(!teacher || !text || !subject){
         alert("请填写完整所有内容和科目！");
         return;
     }
 
-    const todayStr = getTodayString();
     const uniqueId = "user_" + Date.now() + "_" + Math.floor(Math.random()*1000);
 
-    submissions = JSON.parse(localStorage.getItem("submissions")) || [];
-    submissions.push({ id: uniqueId, teacher, nick, text, subject, date: todayStr, likes: 0, shares: 0 });
-    localStorage.setItem("submissions", JSON.stringify(submissions));
-    
+    // 向云端待审核表插入数据
+    const { error } = await supabase
+        .from('submissions')
+        .insert([{ id: uniqueId, teacher, nick, text, subject, status: 'pending' }]);
+
+    if (error) {
+        alert("投稿保存云端失败，请检查网络或建表是否正确！");
+        console.error(error);
+        return;
+    }
+
     document.getElementById("teacherName").value = "";
     document.getElementById("teacherNick").value = "";
     document.getElementById("quoteText").value = "";
     document.getElementById("subjectInput").value = "";
 
-    alert("投稿成功！已提交至后台，请等待管理员审核。");
+    alert("投稿成功！已提交至云端后台，请等待管理员审核。");
 }
 
-function share(sub, i){
-    quotes[sub][i].shares++;
-    saveQuotes();
-    renderQuotes();
-    const q = quotes[sub][i];
-    const shareText = `【老师口头禅博物馆】分享：\n${q.teacher} 老师 (${q.nick}) 在 [${sub}] 课上说：\n"${q.text}"\n点击链接看高二信义同学们的珍藏：${window.location.href}`;
+// 分享计数引擎
+async function share(quoteId){
+    const target = globalQuotes.find(q => q.id === quoteId);
+    if(!target) return;
+
+    const newShares = target.shares + 1;
+    
+    await supabase
+        .from('quotes')
+        .update({ shares: newShares })
+        .eq('id', quoteId);
+
+    const shareText = `【老师口头禅博物馆】分享：\n${target.teacher} 老师 (${target.nick || '无'}) 在 [${target.subject}] 课上说：\n"${target.text}"\n快来查看：${window.location.origin}${window.location.pathname}`;
+    
     if (navigator.clipboard && window.isSecureContext) {
         navigator.clipboard.writeText(shareText).then(() => { alert("复制成功！快发给班级群吧！"); }).catch(() => { fallbackCopy(shareText); });
     } else { fallbackCopy(shareText); }
+    
+    fetchQuotesFromSupabase();
 }
 
 function fallbackCopy(text) {
@@ -576,24 +591,14 @@ function fallbackCopy(text) {
     document.body.removeChild(textArea);
 }
 
-function saveQuotes(){
-    localStorage.setItem("quotes", JSON.stringify(quotes));
-}
-
-window.addEventListener('storage', function(e){
-    if(e.key === "quotes"){
-        quotes = JSON.parse(e.newValue) || {};
-        if(currentSelectedSub) renderQuotes();
-        updateRankings();
-    }
-});
-
-// 初始化加载
+// --- 初始化程序 ---
 renderSubjects();
-updateRankings();
+fetchQuotesFromSupabase();
 
-// 自动检测刷新（15秒一次）
-setInterval(() => { updateRankings(); }, 15000);
+// 每 15 秒自动从 Supabase 云数据库同步最新排行榜和赞数
+setInterval(() => { 
+    fetchQuotesFromSupabase(); 
+}, 15000);
 </script>
 </body>
 </html>
